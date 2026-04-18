@@ -724,28 +724,51 @@ function buildPhrases(){
   });
 }
 
+/* ── GEMINI via Worker ── */
+const WORKER = 'https://englishflow.matheus-oteixeira13.workers.dev';
+
+async function askGemini(system, prompt) {
+  const r = await fetch(WORKER, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ system, prompt })
+  });
+  const d = await r.json();
+  return d.text || '';
+}
+
+function parseJSON(text) {
+  // strip markdown fences if present
+  return JSON.parse(text.replace(/```json|```/g, '').trim());
+}
+
 /* ── QUIZ ── */
-let curQ=null;
-const qTopics=['simple present','simple past','future will going to','articles a an the','prepositions in on at','irregular verbs','modal verbs','comparatives superlatives','everyday vocabulary','wh-questions','present perfect','countable uncountable'];
-window.loadQuestion=async function(){
-  document.getElementById('quiz-start').style.display='none';
-  document.getElementById('quiz-content').style.display='none';
-  document.getElementById('quiz-loading').style.display='block';
-  document.getElementById('next-btn').style.display='none';
-  try{
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:700,system:'Generate English quiz questions for Brazilian learners. Respond with valid JSON only.',messages:[{role:'user',content:`Create a multiple choice English question about "${qTopics[Math.floor(Math.random()*qTopics.length)]}" for a Brazilian intermediate student. Return ONLY JSON: {"question":"...","options":["A","B","C","D"],"correct":0,"explanation_pt":"..."}`}]})});
-    const d=await r.json();curQ=JSON.parse(d.content.find(c=>c.type==='text').text.trim());
-    document.getElementById('quiz-loading').style.display='none';
-    document.getElementById('quiz-content').style.display='block';
-    document.getElementById('question-text').textContent=curQ.question;
+let curQ = null;
+const qTopics = ['simple present','simple past','future will going to','articles a an the','prepositions in on at','irregular verbs','modal verbs','comparatives superlatives','everyday vocabulary','wh-questions','present perfect','countable uncountable nouns','passive voice','conditionals','phrasal verbs'];
+
+window.loadQuestion = async function() {
+  document.getElementById('quiz-start').style.display = 'none';
+  document.getElementById('quiz-content').style.display = 'none';
+  document.getElementById('quiz-loading').style.display = 'block';
+  document.getElementById('next-btn').style.display = 'none';
+  const topic = qTopics[Math.floor(Math.random() * qTopics.length)];
+  try {
+    const text = await askGemini(
+      'You generate English quiz questions for Brazilian Portuguese learners. Respond with valid JSON only, no markdown, no extra text.',
+      `Create a multiple choice English question about "${topic}" for a Brazilian intermediate student. Return ONLY a JSON object: {"question":"...","options":["A","B","C","D"],"correct":0,"explanation_pt":"explanation in Portuguese why the answer is correct"}`
+    );
+    curQ = parseJSON(text);
+    document.getElementById('quiz-loading').style.display = 'none';
+    document.getElementById('quiz-content').style.display = 'block';
+    document.getElementById('question-text').textContent = curQ.question;
     document.getElementById('explanation-box').classList.remove('show');
-    const g=document.getElementById('options-grid');g.innerHTML='';
-    curQ.options.forEach((o,i)=>{
-      const b=document.createElement('button');b.className='option-btn';b.textContent=o;
-      b.onclick=()=>checkQ(i);g.appendChild(b);
+    const g = document.getElementById('options-grid'); g.innerHTML = '';
+    curQ.options.forEach((o, i) => {
+      const b = document.createElement('button'); b.className = 'option-btn'; b.textContent = o;
+      b.onclick = () => checkQ(i); g.appendChild(b);
     });
-  }catch(e){
-    document.getElementById('quiz-loading').innerHTML='<p style="color:var(--primary);margin-bottom:1rem">Erro ao gerar pergunta.</p><button class="btn btn-outline" onclick="loadQuestion()">Tentar novamente</button>';
+  } catch(e) {
+    document.getElementById('quiz-loading').innerHTML = '<p style="color:var(--primary);margin-bottom:1rem">Erro ao gerar pergunta. Verifique sua conexão.</p><button class="btn btn-outline" onclick="loadQuestion()">Tentar novamente</button>';
   }
 };
 function checkQ(idx){
@@ -767,14 +790,18 @@ window.translateSentence=async function(){
   const btn=document.getElementById('translate-btn');btn.textContent='Traduzindo...';btn.disabled=true;
   document.getElementById('translate-result').classList.remove('show');
   try{
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,system:'English teacher for Brazilians. Respond ONLY with valid JSON.',messages:[{role:'user',content:`Translate to English and give a grammar tip. Sentence: "${txt}". Return ONLY JSON: {"english":"...","tip":"..."}`}]})});
-    const d=await r.json();const res=JSON.parse(d.content.find(c=>c.type==='text').text.trim());
+    const text = await askGemini(
+      'You are an English teacher for Brazilian students. Respond ONLY with valid JSON, no markdown, no extra text.',
+      `Translate this Portuguese sentence to English and give a helpful grammar tip in Portuguese. Sentence: "${txt}". Return ONLY JSON: {"english":"natural English translation","tip":"brief grammar tip in Portuguese explaining the structure or vocabulary used"}`
+    );
+    const res = parseJSON(text);
     document.getElementById('translated-text').textContent=res.english;
     document.getElementById('grammar-tip').textContent=res.tip;
     document.getElementById('translate-result').classList.add('show');
     lastPt=txt;addXP(8);
   }catch(e){
-    document.getElementById('translated-text').textContent='Erro. Tente novamente.';
+    document.getElementById('translated-text').textContent='Erro ao traduzir. Verifique sua conexão e tente novamente.';
+    document.getElementById('grammar-tip').textContent='';
     document.getElementById('translate-result').classList.add('show');
   }
   btn.textContent='Traduzir com IA →';btn.disabled=false;
@@ -786,15 +813,17 @@ window.startExam=async function(){
   document.getElementById('exam-intro').style.display='none';
   document.getElementById('exam-gen').style.display='block';
   try{
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:4000,system:'Generate CEFR placement exam questions for Brazilian Portuguese speakers. Respond with valid JSON array only.',messages:[{role:'user',content:`Generate exactly 10 English multiple choice questions for a CEFR placement exam for Brazilian students. Level order must be: A1,A1,A2,A2,B1,B1,B2,B2,C1,C1. Return ONLY a JSON array: [{"question":"...","options":["...","...","...","..."],"correct":0,"level":"A1","explanation_pt":"..."}]`}]})});
-    const d=await r.json();
-    examQs=JSON.parse(d.content.find(c=>c.type==='text').text.trim());
+    const text = await askGemini(
+      'Generate CEFR placement exam questions for Brazilian Portuguese speakers. Respond with valid JSON array only, no markdown, no extra text.',
+      `Generate exactly 10 English multiple choice questions for a CEFR placement exam for Brazilian students. Level order must be exactly: A1,A1,A2,A2,B1,B1,B2,B2,C1,C1. Each question must match its level difficulty. Return ONLY a JSON array of 10 objects: [{"question":"...","options":["...","...","...","..."],"correct":0,"level":"A1","explanation_pt":"brief explanation in Portuguese of why the answer is correct"}]`
+    );
+    examQs = parseJSON(text);
     examAs=[];examIdx=0;
     document.getElementById('exam-gen').style.display='none';
     document.getElementById('exam-q-wrap').style.display='block';
     showQ();
   }catch(e){
-    document.getElementById('exam-gen').innerHTML='<div class="empty-state"><p style="color:var(--primary);margin-bottom:1rem">Erro ao gerar o exame.</p><button class="btn btn-outline" onclick="startExam()">Tentar novamente</button></div>';
+    document.getElementById('exam-gen').innerHTML='<div class="empty-state"><p style="color:var(--primary);margin-bottom:1rem">Erro ao gerar o exame. Verifique sua conexão.</p><button class="btn btn-outline" onclick="startExam()">Tentar novamente</button></div>';
   }
 };
 function showQ(){
