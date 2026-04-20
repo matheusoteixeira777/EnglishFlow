@@ -220,6 +220,15 @@ textarea:focus{border-color:var(--primary)}
 .brow-icon{width:18px;text-align:center;font-size:0.82rem}
 .rec-item{display:flex;gap:0.65rem;padding:0.4rem 0;font-size:0.85rem;line-height:1.5}
 .rec-item span:first-child{color:var(--primary);font-weight:700;flex-shrink:0}
+.diag-item{display:flex;align-items:center;gap:0.75rem;padding:0.65rem 0.9rem;border-radius:var(--rsm);margin-bottom:0.5rem;font-size:0.875rem;font-weight:500}
+.diag-item.weak{background:#FEF2F2;border:1px solid #FCA5A5;color:#7F1D1D}
+.diag-item.strong{background:#DCFCE7;border:1px solid #86EFAC;color:#14532D}
+.trail-step{display:flex;align-items:flex-start;gap:0.85rem;padding:0.9rem 1rem;background:var(--bg);border-radius:var(--rsm);border:1px solid var(--border);margin-bottom:0.6rem;cursor:pointer;transition:all 0.2s}
+.trail-step:hover{border-color:var(--primary);background:var(--pl)}
+.trail-step-num{width:28px;height:28px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:800;flex-shrink:0;font-family:'Syne',sans-serif}
+.trail-step-num.done{background:var(--success)}
+.trail-step-body h4{font-size:0.875rem;font-weight:700;margin-bottom:0.2rem}
+.trail-step-body p{font-size:0.78rem;color:var(--muted);line-height:1.4}
 .reset-link{display:block;text-align:right;margin-top:-0.5rem;margin-bottom:1.1rem}
 .reset-link button{background:none;border:none;font-size:0.72rem;color:var(--muted);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;text-decoration:underline;padding:0}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -439,10 +448,31 @@ textarea:focus{border-color:var(--primary)}
         <div class="result-badge"><span class="rc" id="res-code">B1</span><span class="rn" id="res-name">Intermediário</span></div>
         <h2 id="res-headline"></h2><p id="res-desc"></p>
       </div>
+
+      <!-- WEAK POINTS DIAGNOSTIC -->
+      <div class="result-section" id="weak-section" style="display:none">
+        <h3>⚠️ Pontos a melhorar</h3>
+        <div id="weak-list"></div>
+      </div>
+
+      <!-- STRONG POINTS -->
+      <div class="result-section" id="strong-section" style="display:none">
+        <h3>✅ Pontos fortes</h3>
+        <div id="strong-list"></div>
+      </div>
+
+      <!-- BREAKDOWN -->
       <div class="result-section"><h3>Desempenho por nível</h3><div id="brows"></div></div>
-      <div class="result-section"><h3>📌 Recomendações para você</h3><div id="recs"></div></div>
+
+      <!-- PERSONALIZED TRAIL -->
+      <div class="result-section">
+        <h3>🗺️ Sua trilha personalizada</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:1rem;line-height:1.5">Com base no seu diagnóstico, o Quiz agora vai focar nos seus pontos fracos até você dominá-los.</p>
+        <div id="trail-list"></div>
+      </div>
+
       <div style="display:flex;gap:0.65rem;flex-wrap:wrap">
-        <button class="btn btn-primary" onclick="switchTab('quiz',2)">Praticar no Quiz →</button>
+        <button class="btn btn-primary" onclick="startPersonalizedQuiz()">🎯 Iniciar Quiz Personalizado →</button>
         <button class="btn btn-outline" onclick="resetExam()">Refazer exame</button>
       </div>
     </div>
@@ -571,6 +601,7 @@ const CHIP={
 let userXP=0, userLevelIdx=null, examDone=false;
 let qScore=0, qTotal=0, streak=1;
 let seenCards=new Set();
+let weakTopics=[], strongTopics=[];
 let saveTimer=null;
 
 /* ── FIRESTORE SAVE/LOAD ── */
@@ -581,6 +612,7 @@ async function saveToCloud() {
       userXP, userLevelIdx: userLevelIdx ?? null, examDone,
       qScore, qTotal, streak,
       seenCards: [...seenCards],
+      weakTopics, strongTopics,
       lastDay: new Date().toDateString(),
       updatedAt: new Date().toISOString()
     });
@@ -609,6 +641,8 @@ async function loadFromCloud() {
       qTotal = s.qTotal || 0;
       streak = s.streak || 1;
       if (s.seenCards) s.seenCards.forEach(k => seenCards.add(k));
+      if (s.weakTopics) weakTopics = s.weakTopics;
+      if (s.strongTopics) strongTopics = s.strongTopics;
       if (s.lastDay) {
         const diff = Math.floor((new Date() - new Date(s.lastDay)) / 864e5);
         if (diff === 1) streak++;
@@ -724,40 +758,81 @@ function buildPhrases(){
   });
 }
 
-/* ── GEMINI via Worker ── */
+/* ── GROQ via Worker ── */
 const WORKER = 'https://englishflow.matheus-oteixeira13.workers.dev';
 
-async function askGemini(system, prompt) {
+async function askAI(system, prompt) {
   const r = await fetch(WORKER, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ system, prompt })
   });
+  if (!r.ok) throw new Error('Worker error ' + r.status);
   const d = await r.json();
-  return d.text || '';
+  const text = d.text || '';
+  // Groq with json_object returns an object — handle both array and object wrappers
+  try {
+    const parsed = JSON.parse(text);
+    // if it's an object with a single array key, unwrap it
+    if (!Array.isArray(parsed)) {
+      const keys = Object.keys(parsed);
+      if (keys.length === 1 && Array.isArray(parsed[keys[0]])) return parsed[keys[0]];
+    }
+    return parsed;
+  } catch(e) {
+    // try extracting JSON from markdown
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (match) return JSON.parse(match[1].trim());
+    throw new Error('JSON parse failed: ' + text.slice(0, 100));
+  }
 }
 
-function parseJSON(text) {
-  // strip markdown fences if present
-  return JSON.parse(text.replace(/```json|```/g, '').trim());
-}
+/* ── TOPIC MAP — used for diagnosis ── */
+const TOPIC_LABELS = {
+  'simple present':    'Simple Present',
+  'simple past':       'Simple Past',
+  'future':            'Futuro (will/going to)',
+  'articles':          'Artigos (a/an/the)',
+  'prepositions':      'Preposições (in/on/at)',
+  'modal verbs':       'Modal Verbs',
+  'present perfect':   'Present Perfect',
+  'comparatives':      'Comparativos e Superlativos',
+  'vocabulary':        'Vocabulário',
+  'irregular verbs':   'Verbos Irregulares',
+  'wh-questions':      'Perguntas (Wh-)',
+  'countable':         'Contáveis e Incontáveis',
+  'passive voice':     'Voz Passiva',
+  'conditionals':      'Condicionais',
+  'phrasal verbs':     'Phrasal Verbs',
+};
+
+/* ── STATE ── */
+let weakTopics = [];   // topics user got wrong in exam
+let strongTopics = []; // topics user got right
 
 /* ── QUIZ ── */
 let curQ = null;
-const qTopics = ['simple present','simple past','future will going to','articles a an the','prepositions in on at','irregular verbs','modal verbs','comparatives superlatives','everyday vocabulary','wh-questions','present perfect','countable uncountable nouns','passive voice','conditionals','phrasal verbs'];
+const allTopics = Object.keys(TOPIC_LABELS);
 
 window.loadQuestion = async function() {
   document.getElementById('quiz-start').style.display = 'none';
   document.getElementById('quiz-content').style.display = 'none';
   document.getElementById('quiz-loading').style.display = 'block';
   document.getElementById('next-btn').style.display = 'none';
-  const topic = qTopics[Math.floor(Math.random() * qTopics.length)];
+
+  // prioritize weak topics if exam was done
+  const pool = weakTopics.length > 0
+    ? [...weakTopics, ...weakTopics, ...allTopics] // weak topics appear 3x more likely
+    : allTopics;
+  const topic = pool[Math.floor(Math.random() * pool.length)];
+  const topicLabel = TOPIC_LABELS[topic] || topic;
+
   try {
-    const text = await askGemini(
-      'You generate English quiz questions for Brazilian Portuguese learners. Respond with valid JSON only, no markdown, no extra text.',
-      `Create a multiple choice English question about "${topic}" for a Brazilian intermediate student. Return ONLY a JSON object: {"question":"...","options":["A","B","C","D"],"correct":0,"explanation_pt":"explanation in Portuguese why the answer is correct"}`
+    const result = await askAI(
+      'You generate English quiz questions for Brazilian Portuguese learners. Respond with a JSON object only.',
+      `Create a multiple choice English question about "${topicLabel}" for a Brazilian student. Return ONLY a JSON object: {"question":"...","options":["A","B","C","D"],"correct":0,"explanation_pt":"explanation in Portuguese why the answer is correct","topic":"${topic}"}`
     );
-    curQ = parseJSON(text);
+    curQ = Array.isArray(result) ? result[0] : result;
     document.getElementById('quiz-loading').style.display = 'none';
     document.getElementById('quiz-content').style.display = 'block';
     document.getElementById('question-text').textContent = curQ.question;
@@ -767,21 +842,48 @@ window.loadQuestion = async function() {
       const b = document.createElement('button'); b.className = 'option-btn'; b.textContent = o;
       b.onclick = () => checkQ(i); g.appendChild(b);
     });
+    // show which topic this question is about
+    if(weakTopics.includes(curQ.topic)){
+      document.getElementById('quiz-content').querySelector('.question-text').insertAdjacentHTML('beforebegin',
+        `<div style="font-size:0.72rem;font-weight:700;color:var(--primary);letter-spacing:0.05em;margin-bottom:0.6rem">🎯 PONTO FRACO — ${TOPIC_LABELS[curQ.topic]||curQ.topic}</div>`
+      );
+    }
   } catch(e) {
     document.getElementById('quiz-loading').innerHTML = '<p style="color:var(--primary);margin-bottom:1rem">Erro ao gerar pergunta. Verifique sua conexão.</p><button class="btn btn-outline" onclick="loadQuestion()">Tentar novamente</button>';
   }
 };
+
 function checkQ(idx){
   const btns=document.querySelectorAll('#options-grid .option-btn');
   btns.forEach(b=>b.disabled=true);qTotal++;
-  if(idx===curQ.correct){btns[idx].classList.add('correct');qScore++;addXP(15);}
-  else{btns[idx].classList.add('wrong');btns[curQ.correct].classList.add('correct');}
+  const correct = idx===curQ.correct;
+  if(correct){
+    btns[idx].classList.add('correct');qScore++;addXP(15);
+    // if user got a weak topic right, move it toward strong
+    if(curQ.topic && weakTopics.includes(curQ.topic)){
+      weakTopics = weakTopics.filter(t => t !== curQ.topic);
+      if(!strongTopics.includes(curQ.topic)) strongTopics.push(curQ.topic);
+      save();
+    }
+  } else {
+    btns[idx].classList.add('wrong');btns[curQ.correct].classList.add('correct');
+    // if user gets a topic wrong in quiz, add to weak topics
+    if(curQ.topic && !weakTopics.includes(curQ.topic)){
+      weakTopics.push(curQ.topic);
+      save();
+    }
+  }
   const ex=document.getElementById('explanation-box');ex.textContent='💡 '+curQ.explanation_pt;ex.classList.add('show');
   document.getElementById('next-btn').style.display='flex';
   document.getElementById('score-badge').textContent=`${qScore}/${qTotal} (${Math.round(qScore/qTotal*100)}%)`;
   document.getElementById('stat-score').textContent=Math.round(qScore/qTotal*100)+'%';
   save();
 }
+
+window.startPersonalizedQuiz = function() {
+  switchTab('quiz', 2);
+  loadQuestion();
+};
 
 /* ── TRANSLATOR ── */
 let lastPt='';
@@ -790,13 +892,13 @@ window.translateSentence=async function(){
   const btn=document.getElementById('translate-btn');btn.textContent='Traduzindo...';btn.disabled=true;
   document.getElementById('translate-result').classList.remove('show');
   try{
-    const text = await askGemini(
-      'You are an English teacher for Brazilian students. Respond ONLY with valid JSON, no markdown, no extra text.',
-      `Translate this Portuguese sentence to English and give a helpful grammar tip in Portuguese. Sentence: "${txt}". Return ONLY JSON: {"english":"natural English translation","tip":"brief grammar tip in Portuguese explaining the structure or vocabulary used"}`
+    const res = await askAI(
+      'You are an English teacher for Brazilian students. Respond ONLY with a JSON object.',
+      `Translate this Portuguese sentence to English and give a helpful grammar tip. Sentence: "${txt}". Return ONLY a JSON object: {"english":"natural English translation","tip":"brief grammar tip in Portuguese explaining the structure or vocabulary used"}`
     );
-    const res = parseJSON(text);
-    document.getElementById('translated-text').textContent=res.english;
-    document.getElementById('grammar-tip').textContent=res.tip;
+    const r = Array.isArray(res) ? res[0] : res;
+    document.getElementById('translated-text').textContent=r.english;
+    document.getElementById('grammar-tip').textContent=r.tip;
     document.getElementById('translate-result').classList.add('show');
     lastPt=txt;addXP(8);
   }catch(e){
@@ -813,11 +915,14 @@ window.startExam=async function(){
   document.getElementById('exam-intro').style.display='none';
   document.getElementById('exam-gen').style.display='block';
   try{
-    const text = await askGemini(
-      'Generate CEFR placement exam questions for Brazilian Portuguese speakers. Respond with valid JSON array only, no markdown, no extra text.',
-      `Generate exactly 10 English multiple choice questions for a CEFR placement exam for Brazilian students. Level order must be exactly: A1,A1,A2,A2,B1,B1,B2,B2,C1,C1. Each question must match its level difficulty. Return ONLY a JSON array of 10 objects: [{"question":"...","options":["...","...","...","..."],"correct":0,"level":"A1","explanation_pt":"brief explanation in Portuguese of why the answer is correct"}]`
+    const result = await askAI(
+      'Generate CEFR placement exam questions for Brazilian Portuguese speakers. Respond with a JSON object containing a "questions" array.',
+      `Generate exactly 10 English multiple choice questions for a CEFR placement exam for Brazilian students.
+Level order must be exactly: A1, A1, A2, A2, B1, B1, B2, B2, C1, C1.
+Each question must clearly match its CEFR level and cover a specific grammar or vocabulary topic.
+Return a JSON object: {"questions": [{"question":"...","options":["...","...","...","..."],"correct":0,"level":"A1","topic":"simple present","explanation_pt":"brief explanation in Portuguese why the answer is correct"}]}`
     );
-    examQs = parseJSON(text);
+    examQs = Array.isArray(result) ? result : (result.questions || result);
     examAs=[];examIdx=0;
     document.getElementById('exam-gen').style.display='none';
     document.getElementById('exam-q-wrap').style.display='block';
@@ -826,6 +931,7 @@ window.startExam=async function(){
     document.getElementById('exam-gen').innerHTML='<div class="empty-state"><p style="color:var(--primary);margin-bottom:1rem">Erro ao gerar o exame. Verifique sua conexão.</p><button class="btn btn-outline" onclick="startExam()">Tentar novamente</button></div>';
   }
 };
+
 function showQ(){
   const q=examQs[examIdx],tot=examQs.length;
   document.getElementById('exam-strip-fill').style.width=(examIdx/tot*100+10)+'%';
@@ -841,12 +947,14 @@ function showQ(){
     b.onclick=()=>answerQ(i);g.appendChild(b);
   });
 }
+
 function answerQ(idx){
   if(autoT)clearTimeout(autoT);
   const q=examQs[examIdx];
   const btns=document.querySelectorAll('#exam-opts .option-btn');
   btns.forEach(b=>b.disabled=true);
-  const ok=idx===q.correct;examAs.push({level:q.level,correct:ok});
+  const ok=idx===q.correct;
+  examAs.push({level:q.level, correct:ok, topic: q.topic||''});
   btns[idx].classList.add(ok?'correct':'wrong');
   if(!ok)btns[q.correct].classList.add('correct');
   const fb=document.getElementById('exam-fb');
@@ -857,24 +965,67 @@ function answerQ(idx){
   requestAnimationFrame(()=>requestAnimationFrame(()=>{aaf.style.transition='width 2s linear';aaf.style.width='100%';}));
   autoT=setTimeout(()=>{examIdx++;examIdx<examQs.length?showQ():showResults();},2100);
 }
+
 function showResults(){
   document.getElementById('exam-q-wrap').style.display='none';
   document.getElementById('exam-results').style.display='block';
+
+  // level scoring
   const levels=['A1','A2','B1','B2','C1'],sb={};
   levels.forEach(l=>{sb[l]={c:0,t:0}});
   examAs.forEach(a=>{if(sb[a.level]){sb[a.level].t++;if(a.correct)sb[a.level].c++;}});
   let code='A1';levels.forEach(l=>{if(sb[l].t>0&&sb[l].c>=1)code=l;});
   if(sb['C1']&&sb['C1'].c===2)code='C2';
   const lvl=LEVELS.find(l=>l.code===code)||LEVELS[0];
+
+  // topic diagnosis
+  weakTopics = [];
+  strongTopics = [];
+  examAs.forEach(a => {
+    if(!a.topic) return;
+    const t = a.topic.toLowerCase();
+    if(!a.correct && !weakTopics.includes(t)) weakTopics.push(t);
+    else if(a.correct && !strongTopics.includes(t)) strongTopics.push(t);
+  });
+  // remove from strong if it's also weak
+  strongTopics = strongTopics.filter(t => !weakTopics.includes(t));
+
+  // set XP and level
   userXP=Math.max(userXP,EXAM_SEED[code]||0);
   userLevelIdx=LEVELS.findIndex(l=>l.code===code);
   examDone=true;
+
+  // hero
   document.getElementById('result-hero').style.background=`linear-gradient(135deg,${lvl.col},${lvl.bar})`;
   document.getElementById('res-code').textContent=lvl.code;
   document.getElementById('res-name').textContent=lvl.name;
   const tot=examAs.filter(a=>a.correct).length;
   document.getElementById('res-headline').textContent=tot>=8?'Excelente! 🏆':tot>=5?'Bom trabalho! 🎯':'Continue praticando! 💪';
   document.getElementById('res-desc').textContent=`Você acertou ${tot} de ${examAs.length} perguntas. ${lvl.desc}`;
+
+  // weak points
+  if(weakTopics.length > 0){
+    document.getElementById('weak-section').style.display='block';
+    const wl = document.getElementById('weak-list'); wl.innerHTML='';
+    weakTopics.forEach(t=>{
+      const d=document.createElement('div');d.className='diag-item weak';
+      d.innerHTML=`<span>✗</span><span>${TOPIC_LABELS[t]||t}</span>`;
+      wl.appendChild(d);
+    });
+  }
+
+  // strong points
+  if(strongTopics.length > 0){
+    document.getElementById('strong-section').style.display='block';
+    const sl = document.getElementById('strong-list'); sl.innerHTML='';
+    strongTopics.forEach(t=>{
+      const d=document.createElement('div');d.className='diag-item strong';
+      d.innerHTML=`<span>✓</span><span>${TOPIC_LABELS[t]||t}</span>`;
+      sl.appendChild(d);
+    });
+  }
+
+  // breakdown bars
   const brows=document.getElementById('brows');brows.innerHTML='';
   levels.forEach(l=>{
     const s=sb[l],cs=CHIP[l],lv=LEVELS.find(x=>x.code===l);
@@ -884,22 +1035,48 @@ function showResults(){
     brows.appendChild(row);
   });
   setTimeout(()=>{document.querySelectorAll('.brow-fill').forEach(b=>{b.style.transition='width 0.8s ease';b.style.width=b.dataset.p+'%';});},120);
-  const recEl=document.getElementById('recs');recEl.innerHTML='';
-  (RECS[code]||RECS.A1).forEach(r=>{
-    const d=document.createElement('div');d.className='rec-item';
-    d.innerHTML=`<span>→</span><span>${r}</span>`;recEl.appendChild(d);
+
+  // personalized trail
+  const trailEl=document.getElementById('trail-list');trailEl.innerHTML='';
+  const trailSteps = [
+    ...weakTopics.map((t,i) => ({
+      num: i+1,
+      title: `Praticar: ${TOPIC_LABELS[t]||t}`,
+      desc: `Você errou questões sobre este tópico. O Quiz vai focar aqui até você dominar.`,
+      action: () => startPersonalizedQuiz(),
+      done: false
+    })),
+    {
+      num: weakTopics.length+1,
+      title: `Consolidar nível ${lvl.code}`,
+      desc: `Complete 10 questões certas seguidas no Quiz para subir de nível.`,
+      action: () => startPersonalizedQuiz(),
+      done: false
+    }
+  ];
+  trailSteps.slice(0,5).forEach(step=>{
+    const d=document.createElement('div');d.className='trail-step';d.onclick=step.action;
+    d.innerHTML=`<div class="trail-step-num${step.done?' done':''}">${step.num}</div><div class="trail-step-body"><h4>${step.title}</h4><p>${step.desc}</p></div>`;
+    trailEl.appendChild(d);
   });
+
   updateUI();addXP(50);
   document.getElementById('stat-xp').textContent=userXP;
+  save();
 }
+
 window.resetExam=function(){
   examQs=[];examAs=[];examIdx=0;
   ['exam-results','exam-gen','exam-q-wrap'].forEach(id=>document.getElementById(id).style.display='none');
+  document.getElementById('weak-section').style.display='none';
+  document.getElementById('strong-section').style.display='none';
   document.getElementById('exam-intro').style.display='block';
 };
+
 window.resetProgress=async function(){
   if(!confirm('Tem certeza? Todo seu progresso (XP, nível, quiz, exame) será apagado.'))return;
-  userXP=0;userLevelIdx=null;examDone=false;qScore=0;qTotal=0;streak=1;seenCards.clear();
+  userXP=0;userLevelIdx=null;examDone=false;qScore=0;qTotal=0;streak=1;
+  seenCards.clear();weakTopics=[];strongTopics=[];
   document.getElementById('stat-xp').textContent='0';
   document.getElementById('stat-streak').textContent='1';
   document.getElementById('stat-score').textContent='—';
